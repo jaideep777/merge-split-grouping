@@ -1066,50 +1066,35 @@ inline __device__ __host__ float4 smoothstep(float4 a, float4 b, float4 x){
 #include <thrust/fill.h>
 
 // =============================================================================
-// 		Periodic Distance related utilities
+// 		2D Periodic Distance functions
 // 		ADDED by : JAIDEEP
 // 		19 Feb 2013
 // =============================================================================
 
-// indicator variable I{x<a} = {1, x < a; 0 otherwise}
-inline __device__ __host__ float indicator(float x, float a){
-	return float(x < a);
-}
-
-// brings x to principal range defined by (xmin, xmax)
-inline __device__ __host__ void makePeriodic(float &x, float xmin, float xmax){
-	x = xmin + fmodf(x-xmin, xmax-xmin);
-	x += xmax-xmin;							// this second fmodf is required because some implementations..
-	x = xmin + fmodf(x-xmin, xmax-xmin);	// ..of fmodf use negative remainders in principle range 
-//	x = x + (float(x < xmin) - float(x > xmax))*(xmax-xmin);
-}
-
-// brings x to principal range defined by (xmin, xmax)
-inline __device__ __host__ int makePeriodicID(int ix, int n){
-	ix = ix % n;
-	ix += n;							// this second fmodf is required because some implementations..
-	ix = ix % n;	// ..of fmodf use negative remainders in principle range 
-	return ix;
-//	x = x + (float(x < xmin) - float(x > xmax))*(xmax-xmin);
-}
-
-// calculate displacement x1 ---> x2 on a cylinder with circumference X
-// limits (-X/2 , X/2) are inspired from principle range of theta
-inline __device__ __host__ float periodicDisplacement(float x1, float x2, float X){
-	float dx = (x2-x1);
-	makePeriodic(dx, -X/2, X/2);
-	return dx;
-}
-
-// periodic distance is minimum distance on a cylinder
-inline __device__ __host__ float periodicDistance(float x1, float x2, float X){
-	return fabs(periodicDisplacement(x1,x2,X));
-}
 
 // calculate displacement r1 ---> r2 on a hyper-cylinder with circumference X, Y
 inline __device__ __host__ float2 periodicDisplacement(float2 r1, float2 r2, float X, float Y){
 	return make_float2(  periodicDisplacement(r1.x, r2.x, X),
 						 periodicDisplacement(r1.y, r2.y, Y) );
+}
+
+// =============================================================================
+// 		2D Grid functions
+// 		ADDED by : JAIDEEP
+// 		18 Nov 2014
+// =============================================================================
+
+
+inline __device__ __host__ int2 pos2cell(float2 v, float dL){
+	int cellx = pos2cell(v.x, dL);
+	int celly = pos2cell(v.y, dL);
+	return make_int2(cellx, celly);
+}
+
+inline __device__ __host__ float2 cell2pos(int2 v, float dL){
+	float x = cell2pos(v.x, dL);
+	float y = cell2pos(v.y, dL);
+	return make_float2(x, y);
 }
 
 
@@ -1168,17 +1153,6 @@ inline __host__  float2 rnorm2_bounded(curandGenerator_t rgen, float mu, float s
 
 // Implementations that use the default C++ generator
 // Added on: 9 Nov 2014 ... :/ sigh!
-// --- 1-D ---
-inline __host__ float runif(float rmin=0, float rmax=1){
-	float r = float(rand())/RAND_MAX; 
-	return rmin + (rmax-rmin)*r;
-}
-
-inline __host__  float rnorm(float mu=0, float sd=1){
-	float u = runif(), v = runif();		// uniform rn's [0,1] for box-muller
-	float x = sqrt(-2.0*log(u)) * cos(2*pi*v);
-	return mu + sd*x;
-}
 
 // --- 2-D ---
 inline __host__  float2 rnorm2(float mu=0, float sd=1){
