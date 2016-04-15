@@ -13,6 +13,41 @@
 using namespace std;
 
 /*---------------------------------------------------------------------------------------------
+	Binary search in array arr to find first element greater than val
+---------------------------------------------------------------------------------------------*/
+inline int __host__ __device__ bin_search_lub(float val, float * arr, int arrlen){
+
+ 	// selected element
+	int r = 0;
+
+	// binary search init
+	int lo = 0;
+	int hi = arrlen-1;
+	int mid = (hi+lo)/2;
+
+	// search for lower bound, then increment it till we go just beyond a
+	while(hi != mid && lo != mid){
+		if (arr[mid] > val){
+			hi = mid;
+			mid = (hi+lo)/2;
+		}
+		else{
+			lo = mid;
+			mid = (hi+lo)/2;
+		}
+	}
+	r = lo;
+
+	// increment r until lowest number > a is reached
+	while(arr[r] <= val){
+		++r;
+	}
+
+	return r;
+} 
+
+
+/*---------------------------------------------------------------------------------------------
 
 	Sampling using roulette wheel algorithm
 
@@ -25,9 +60,9 @@ using namespace std;
                   |__ range selector (selected element = 2 = upper_bound - 1)
 
 ---------------------------------------------------------------------------------------------*/
-int sample_roulette(float * weights, int n, double * ranges= NULL){
+int sample_roulette(float * weights, int n){
 
-	// create ranges array if not specified
+	// create ranges array
 	double cumm_prob[n+1]; 
 	cumm_prob[0] = 0;
 	for (int i=0; i<n; ++i) cumm_prob[i+1] = cumm_prob[i] + weights[i];
@@ -35,30 +70,7 @@ int sample_roulette(float * weights, int n, double * ranges= NULL){
 	double a = double(rand())/RAND_MAX*(1-1e-12);  // a is range selector. Must be in [0,1)
 	a *= cumm_prob[n];				// transform a into [0, sum(weights) )
 
-	int r = 0; 	// selected element
-
-	// binary search init
-	int lo = 0;
-	int hi = n;
-	int mid = (hi+lo)/2;
-
-	// search for lower bound, then increment it till we go just beyond a
-	while(hi != mid && lo != mid){
-		if (cumm_prob[mid] > a){
-			hi = mid;
-			mid = (hi+lo)/2;
-		}
-		else{
-			lo = mid;
-			mid = (hi+lo)/2;
-		}
-	}
-	r = lo;
-
-	// increment r until lowest number > a is reached
-	while(cumm_prob[r] <= a){
-		++r;
-	}
+	int r = bin_search_lub(a, weights, n+1);
 
 	// we want r-1 because upper bound is the right edge of the range for the desired element
 	return r-1;
@@ -84,9 +96,11 @@ int sample_reject(float * weights, int n){
 	return r;
 }
 
+/*------------------------------------------------------------------------------
 
-// pairwise distances calculation
+	periodic pairwise distances on CPU and GPU
 
+------------------------------------------------------------------------------*/
 void calc_pairwise(float2 * pos, float * out, int n, float ki, float L, float dL){
 	for (int i=0; i<n; ++i){
 		for (int j=0; j<n; ++j){
@@ -114,53 +128,38 @@ __global__ void pairwise_distance_kernel(float2 * pos, float * pd, int nc, float
 }
 
 
+/*------------------------------------------------------------------------------
 
+	Roulette sampling on GPU
 
-__global__ void sample_roulette_kernel(int nc, float* prob, float* cumm_prob, int * ids, curandState* p_rngStates){
+------------------------------------------------------------------------------*/
+__global__ void sample_roulette_kernel(int nc, float* prob, float* cumm_prob_all, int * ids, curandState* p_rngStates){
 	int tid = blockIdx.x*blockDim.x + threadIdx.x;
 	if (tid >= nc) return;
 	
-	// create ranges array if not specified
-	cumm_prob[tid*(nc+1) + 0] = 0;
-	for (int i=0; i<nc; ++i) cumm_prob[tid*(nc+1) + i+1] = cumm_prob[tid*(nc+1) + i] + prob[tid*nc + i]*float(i!=tid);
+	// create ranges array 
+	float * cumm_prob = &cumm_prob_all[tid*(nc+1)];	// cumm_prob_all row #tid
+	cumm_prob[0] = 0;
+	for (int i=0; i<nc; ++i) cumm_prob[i+1] = cumm_prob[i] + prob[tid*nc + i]*float(i!=tid);
 
 	// generate range selector
 	float a = 1-curand_uniform(&p_rngStates[tid]);  // a is range selector. Must be in [0,1)
-	a *= cumm_prob[tid*(nc+1) + nc];				// transform a into [0, sum(weights) )
+	a *= cumm_prob[nc];				// transform a into [0, sum(weights) )
 
-	int r = 0; 	// selected element
-
-	// binary search init
-	int lo = 0;
-	int hi = nc;
-	int mid = (hi+lo)/2;
-
-	// search for lower bound, then increment it till we go just beyond a
-	while(hi != mid && lo != mid){
-		if (cumm_prob[tid*(nc+1) + mid] > a){
-			hi = mid;
-			mid = (hi+lo)/2;
-		}
-		else{
-			lo = mid;
-			mid = (hi+lo)/2;
-		}
-	}
-	r = lo;
-
-	// increment r until lowest number > a is reached
-	while(cumm_prob[tid*(nc+1) + r] <= a){
-		++r;
-	}
+	// get least upper bound
+	int r = bin_search_lub(a, cumm_prob, nc+1); 
 
 	// we want r-1 because upper bound is the right edge of the range for the desired element
 	ids[tid] = r-1;
 	
-	
 }
 
 
+/*------------------------------------------------------------------------------
 
+	Rejection sampling on GPU
+
+------------------------------------------------------------------------------*/
 __global__ void sample_reject_kernel(int nc, float kisd, float* pd, int * ids, int *iters, curandState* p_rngStates, float2*pos, float L){
 	int tid = blockIdx.x*blockDim.x + threadIdx.x;
 	if (tid >= nc) return;
@@ -174,14 +173,9 @@ __global__ void sample_reject_kernel(int nc, float kisd, float* pd, int * ids, i
 		int self = (chosen_one == tid);
 		chosen_one = self*(nc-1) + (1-self)*chosen_one;
 
-		// calc distance from self to other individual
-		//float dist = pd[chosen_one]; //pd[tid*nc + chosen_one];
-		//float dist = length(periodicDisplacement(pos[tid], pos[chosen_one], L, L));
-
 		// get probability of choosing for imitation from imitation kernel
 		float prob = pd[tid*nc + chosen_one];
 		
-
 		// if rnd is < prob, accept.
 		if (curand_uniform(&p_rngStates[tid]) < prob){
 			r = chosen_one;
@@ -261,6 +255,8 @@ int main(){
 	cudaMalloc((void**)&out_dev, nc*nc*sizeof(float));
 	cudaMemcpy(pos_dev, pos, nc*sizeof(float2), cudaMemcpyHostToDevice);
 	
+	//----------------------------------------------------------------------//
+
 	// pairwise distances on GPU
 	T.reset(); T.start();
 	cout << "pairwise distances gpu...";
@@ -292,6 +288,7 @@ int main(){
 	fout.close();
 	cout << sum << " discrepancies." << endl;
 
+	//----------------------------------------------------------------------//
 
 	// sample_reject on GPU
 	int ns = nc;
@@ -303,7 +300,7 @@ int main(){
 	T.reset(); T.start();
 	cout << "reject gpu...";
 	fout.open("reject_out_gpu.txt");
-	for (int t=0; t<1; ++t){
+	for (int t=0; t<1000; ++t){
 		sample_reject_kernel <<<(ns-1)/256+1, 256 >>> (nc, kI, out_dev, ids_dev, iters_dev, dev_XWstates, pos_dev, L);
 		getLastCudaError("sample_reject kernel");
 		cudaMemcpy(ids, ids_dev, ns*sizeof(int), cudaMemcpyDeviceToHost);
@@ -318,6 +315,8 @@ int main(){
 //	for (int i=0; i<ns; ++i) fout << ids[i] << "\t" << iters[i] << "\n";
 	fout.close();	
 
+	//----------------------------------------------------------------------//
+
 	// sample_roulette on GPU
 	float* cumm_prob_dev;
 	cudaMalloc((void**)&cumm_prob_dev, nc*(nc+1)*sizeof(float));
@@ -325,7 +324,7 @@ int main(){
 	T.reset(); T.start();
 	cout << "roulette gpu...";
 	fout.open("roulette_out_gpu.txt");
-	for (int t=0; t<1; ++t){
+	for (int t=0; t<1000; ++t){
 		sample_roulette_kernel <<<(nc-1)/256+1, 256 >>> (nc, out_dev, cumm_prob_dev, ids_dev, dev_XWstates);
 		getLastCudaError("sample_roulette kernel");
 		cudaMemcpy(ids, ids_dev, ns*sizeof(int), cudaMemcpyDeviceToHost);

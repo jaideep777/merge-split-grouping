@@ -87,8 +87,9 @@ plot(prob~dat2$V3)
 dat3 = read.delim("/home/jaideep/chapter3/pd.txt", header=F)
 x = as.numeric(dat3[1,])
 prob = exp(-x*x/5/5/2)
+prob=x
 plot(prob~x)
-dat4 = read.delim("/home/jaideep/chapter3/roulette_out_gpu.txt", header=F)
+dat4 = read.delim("/home/jaideep/chapter3/reject_out_gpu.txt", header=F)
 dat4 = dat4[-513]
 rs = dat4$V1
 iters = dat4$V2
@@ -103,7 +104,7 @@ for(tid in 1:512){
   ids = as.numeric(dat4[,tid])
   ids.freq = as.numeric(table(ids))
   ids.prob = prob[as.integer(rownames(table(ids)))+1]
-  png(filename = sprintf("/home/jaideep/chapter3/figs1/%g.png", tid))
+  png(filename = sprintf("/home/jaideep/chapter3/figs_reject/%g.png", tid))
   plot(ids.freq~ids.prob)
   dev.off()
   cat(tid, "\n")
