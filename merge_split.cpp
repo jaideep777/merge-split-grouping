@@ -2,6 +2,7 @@
 #include <vector>
 #include <map>
 #include <cstdlib>
+#include <fstream>
 using namespace std;
 
 
@@ -67,6 +68,8 @@ class Group{
 	public:
 	vector <int> members;
 	float ws;
+	float pg;
+	int ng, kg;
 };
 
 
@@ -78,17 +81,32 @@ class ParticleSystem{
 	vector <int> par;	// group parent of each particle
 	vector <int> sz;	// tree size of each root
 
-	vector <int> ws;	// cohesive tendency of each particle
+	vector <float> ws;	// cohesive tendency of each particle
+	vector <float> wa;	// cooperative tendency of each particle
 	
 	map <int, Group> grps;
 
+	// dynamics
+	float mergeRate, splitRate; // splitting rate compared to merging rate  
+
+	public:
 	void init(int n){
 		N=n;
 		gid.resize(N,0);
 		par.resize(N,0);
 		sz.resize(N,1);
 		ws.resize(N,0);
-		for (int i=0; i<N; ++i) par[i] = gid[i] = i;
+		for (int i=0; i<N; ++i) {
+			par[i] = gid[i] = ws[i] = i;
+			wa[i] = (i < N/2)? 1:0;
+		}
+		splitRate = 3;
+		mergeRate = 1;
+		
+		if (splitRate > 1){
+			mergeRate = 1/splitRate;
+			splitRate = 1;
+		}
 	}
 	
 	// create group_id -> member_list map from gids
@@ -113,9 +131,10 @@ class ParticleSystem{
 	// print groups along wth group properties
 	void printGroupProps(){
 		for (map <int, Group>::iterator i=grps.begin(); i!=grps.end(); ++i){
-			cout << sz[i->first] << ": ";
+			cout << i->first << " :\t"
+				 << i->second.ws << " | ";
 			for (int j=0; j<i->second.members.size(); ++j) cout << i->second.members[j] << " ";
-			cout << "\n";
+			cout << "(" << sz[i->first] << ")\n";
 		}		
 		cout << endl; 	
 	}
@@ -143,61 +162,112 @@ class ParticleSystem{
 		for (int i=0; i<N; ++i) cout << sz[i] << " ";
 		cout << endl << "gid: ";
 		for (int i=0; i<N; ++i) cout << gid[i] << " ";
+		cout << endl << "ws : ";
+		for (int i=0; i<N; ++i) cout << ws[i] << " ";
 		cout << endl;
 	}
 		
+		
+	// calculate group averages
+	void calcGrpAverages(){
+		for (map <int, Group>::iterator i=grps.begin(); i!=grps.end(); ++i){
+			i->second.ws = i->second.ng = i->second.pg = i->second.kg = 0;
+			for (int j=0; j<i->second.members.size(); ++j){
+				i->second.ws += ws[i->second.members[j]];
+				i->second.ng += 1;
+				i->second.kg += wa[i->second.members[j]];
+			}
+			i->second.ws /= i->second.members.size();
+			i->second.pg = float(i->second.kg) / i->second.ng;
+		}		
+	}
+	
+	// choose random group (returns root)
+	int chooseGrp(){
+		map <int, Group> ::iterator it = grps.begin();
+		int rnd = rand() % grps.size();
+		advance(it, rnd);
+		return it->first;
+	}
+
+	// choose random pair of groups (returns roots)
+	vector <int> chooseGrpPair(){
+		map <int, Group> ::iterator it = grps.begin();
+		int rnd = rand() % grps.size();
+		int rnd2 = rand() % (grps.size()-1);
+		if (rnd2 == rnd) rnd2 = grps.size()-1;
+		int i1 = min(rnd, rnd2);
+		int i2 = max(rnd, rnd2);
+		
+		vector <int> pair(2);
+		advance(it, i1);
+		pair[0] = it->first;
+		advance(it, i2-i1);
+		pair[1] = it->first;
+		
+		return pair;
+	}
+	
+	float calc_r(){
+	
+	}	
 }; 
 
 
 
-
+float runif(){
+	return float(rand())/RAND_MAX;
+}
 
 
 int main(){
 
 	ParticleSystem psys;
-	psys.init(10);
-
-	psys.merge(0,1);
-	psys.merge(0,2);
-	psys.merge(0,3);
-
-	psys.merge(5,6);
-	psys.merge(5,7);
-
-	psys.merge(8,9);
-
-	psys.merge(0,5);
-	psys.merge(0,9);
-
+	psys.init(1000);
 
 	psys.mapGroups();
-	psys.printGroupProps();
-	psys.printInternals();
-
+	psys.calcGrpAverages();
 
 	int p, q;
-	while (1){
-		cout << ">> ";
-		string s;
-		cin >> s;
 
-		if (s == "m") {
-			cin >> p >> q;
-			psys.merge(p,q);
-			psys.mapGroups();
-		}	
-		else{
-			cin >> p;
-			int rootp = root(p, &psys.par[0]);
-			psys.split(rootp);
+	cout << "start...\n";
+	ofstream fout("ngrps.txt");
+	for (int t=0; t<10000; ++t){
+		
+		// merge a random group pair
+		if (psys.grps.size() > 1 && runif() < psys.mergeRate){
+			vector <int> pair = psys.chooseGrpPair();
+			psys.merge(pair[0], pair[1]);
 			psys.mapGroups();
 		}
-	
-		psys.printGroupProps();
-		psys.printGroups();
-		psys.printInternals(); 
+		
+		// split a random group
+		if (runif() < psys.splitRate){
+			int r = psys.chooseGrp();
+			float siz = psys.grps[r].members.size();
+			float prob_split = siz*siz/(5*5+siz*siz);  // groups of size 5 have 50% chance of splitting
+			if (runif() < prob_split){
+				psys.split(r);
+				psys.mapGroups();
+			}
+		}		
+
+		// recalculate grp average quantities
+		psys.calcGrpAverages();	
+		
+		// output group size
+		fout << psys.grps.size() << endl;
 	}
+
+//	psys.printGroupProps();
+//	psys.printGroups();
+	
+	ofstream fout_gsd("gsd.txt");
+	for (map <int, Group>::iterator it = psys.grps.begin(); it != psys.grps.end(); ++it ){
+		fout_gsd << it->second.members.size() << " ";
+	}
+	fout << endl;
+	
 	
 }
 
@@ -206,34 +276,5 @@ int main(){
 
 
 
-// remove p from its group and put it in separate group
-//void remove(int p, int *par, int *sz, int*grp, int grpsiz){
-//	int r = root(p, par);
-//	if (p != r){
-//		--sz[r];
-//		sz[p] = 1;
-//		// set parent of everyone in the grp as root
-//		for (int i=0; i<grpsiz; ++i){
-//			par[grp[i]] = r;
-//		}
-//		par[p] = p;
-//	}
-//	else {	// element to be removed is root
-//		int newroot;
-//		if (grp[0] == r){ // if 1st element is root make 2nd as root
-//			newroot = grp[1];
-//		}
-//		else{	// 1st element is not root, so it can be new root
-//			newroot = grp[0];
-//		}		
-//		// set parent of everyone to new root
-//		for (int i=1; i<grpsiz; ++i){
-//			par[grp[i]] = newroot;
-//		}
-//		par[p] = p;	// set parent of p = p, so p becomes root
-//		sz[newroot] = sz[p]-1;
-//		sz[p] = 1;
-//	}
-//}
 
 
